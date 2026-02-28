@@ -24,7 +24,7 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
             'popup-use-custom-width', 'popup-custom-width', 'player-filter-mode', 'player-filter-list','hide-text',
             'fallback-art-path','popup-show-visualizer', 'popup-hide-pill-visualizer','compatibility-delay',
             'popup-follow-custom-bg', 'popup-follow-custom-text','action-hover', 'hover-delay', 'selected-player-bus',
-            'popup-show-player-selector','show-pill-border','invert-scroll-direction'
+            'popup-show-player-selector','show-pill-border','invert-scroll-direction','always-show-pill'
         ];
 
         // =========================================
@@ -36,6 +36,18 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
         });
 
         const genGroup = new Adw.PreferencesGroup({ title: _('General Settings') });
+        
+        const alwaysShowRow = new Adw.ActionRow({
+            title: _('Always ON'),
+            subtitle: _('Retain last known track and keep pill visible after closing the player')
+        });
+        const alwaysShowToggle = new Gtk.Switch({
+            active: settings.get_boolean('always-show-pill'),
+            valign: Gtk.Align.CENTER
+        });
+        settings.bind('always-show-pill', alwaysShowToggle, 'active', Gio.SettingsBindFlags.DEFAULT);
+        alwaysShowRow.add_suffix(alwaysShowToggle);
+        genGroup.add(alwaysShowRow);
         
         // Album Art
         const artRow = new Adw.ActionRow({
@@ -896,11 +908,21 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
             title: _("What's New") 
         });
 
-        const changelog = [
-            {
-                version: "V24 - Latest Update",
-                subtitle: "Ubuntu Dock Support, UI Fixes & Stability",
+        const changelog = [     
+        	{
+                version: "V26 - Latest Update",
+                subtitle: "Dynamic Contrast & Readability Improvements",
                 expanded: true,
+                notes: "• Added dynamic contrast: Popup text and buttons now automatically turn dark on light album arts for perfect readability\n" +
+                       "• The Player Selector menu now correctly follows your Custom Color settings\n" +
+                       "• Dynamic contrast is also applied to the Player Selector menu\n" +
+                       "• Improved Player Selector: Added smart DBus logic to accurately detect and display media player names and icons\n" +
+                       "• Fixed an issue where the popup menu would jump or resize incorrectly when Custom Width was enabled"
+            },
+            {
+                version: "V25 - Latest Update",
+                subtitle: "Ubuntu Dock Support, UI Fixes & Stability",
+                expanded: false,
                 notes: "• Added automatic vertical mode for side panels (e.g., Ubuntu Dock)\n" +
                        "• Fixed an issue where the pill disappeared when moving the dock\n" +
                        "• Improved seeker sync when changing tracks\n" +
@@ -928,9 +950,9 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
 
             let label = new Gtk.Label({
                 label: release.notes,
-                justify: Gtk.Justification.LEFT, // Balra zárt szöveg
-                xalign: 0,                       // Szövegdoboz balra igazítása
-                wrap: true,                      // Sortörés engedélyezése
+                justify: Gtk.Justification.LEFT, 
+                xalign: 0,                       
+                wrap: true,                      
                 margin_top: 10,
                 margin_bottom: 10,
                 margin_start: 15,
