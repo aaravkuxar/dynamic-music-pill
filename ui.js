@@ -88,7 +88,8 @@ class ScrollLabel extends St.Widget {
         this._text = "";
         this._gameMode = false;
         this._isScrolling = false;
-        this._container = new St.BoxLayout({ vertical: false });
+	this._container = new St.BoxLayout();
+	this._container.vertical = false;
         this.add_child(this._container);
 
         this._label1 = new St.Label({ style_class: styleClass, y_align: Clutter.ActorAlign.CENTER });
@@ -120,6 +121,7 @@ class ScrollLabel extends St.Widget {
     }
 
 	destroy() {
+	    this._disposed = true;
 	    this._stopAnimation();
 	    if (this._resizeTimer) { GLib.source_remove(this._resizeTimer); this._resizeTimer = null; }
 	    if (this._measureTimeout) { GLib.source_remove(this._measureTimeout); this._measureTimeout = null; }
@@ -140,10 +142,11 @@ class ScrollLabel extends St.Widget {
     
     this._idleResizeId = GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
         this._idleResizeId = null;
-        if (!this.get_parent()) return GLib.SOURCE_REMOVE;
+        if (this.toString().includes('disposed') || !this.get_parent()) 
+            return GLib.SOURCE_REMOVE;
 
-		// The lyrics have finished scrolling, do not trigger the scroll again
-		if (this._lyricFinished) return GLib.SOURCE_REMOVE;
+	// The lyrics have finished scrolling, do not trigger the scroll again
+	if (this._lyricFinished) return GLib.SOURCE_REMOVE;
 		
         let boxWidth = this.get_allocation_box().get_width();
         if (boxWidth <= 1) return GLib.SOURCE_REMOVE;
@@ -422,10 +425,11 @@ class ExpandedPlayer extends St.Widget {
 
         this._box = new St.BoxLayout({
             style_class: 'music-pill-expanded',
-            vertical: true,
             reactive: true
         });
+        this._box.vertical = true;
         this._box.connectObject('button-press-event', () => Clutter.EVENT_STOP, this);
+        this._box.connectObject('touch-event', () => Clutter.EVENT_STOP, this);
         this.add_child(this._box);
         
         this._playerSelectorBox = new St.BoxLayout({
@@ -498,6 +502,14 @@ class ExpandedPlayer extends St.Widget {
             return Clutter.EVENT_STOP;
         }, this);
 
+        this._sliderBin.connectObject('touch-event', (actor, event) => {
+            if (event.type() === Clutter.EventType.TOUCH_END) {
+                this._handleSeek(event);
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }, this);
+
         progressBox.add_child(this._currentTimeLabel);
         progressBox.add_child(this._sliderBin);
         progressBox.add_child(this._totalTimeLabel);
@@ -508,20 +520,25 @@ class ExpandedPlayer extends St.Widget {
         this._shuffleIcon = new St.Icon({ icon_name: 'media-playlist-shuffle-symbolic', icon_size: 16 });
         this._shuffleBtn = new St.Button({ style_class: 'control-btn-secondary', child: this._shuffleIcon, reactive: true, can_focus: true });
         this._shuffleBtn.connectObject('button-release-event', () => { this._controller.toggleShuffle(); return Clutter.EVENT_STOP; }, this);
+        this._shuffleBtn.connectObject('touch-event', (actor, event) => { if (event.type() === Clutter.EventType.TOUCH_END) { this._controller.toggleShuffle(); return Clutter.EVENT_STOP; } return Clutter.EVENT_PROPAGATE; }, this);
 
         this._prevBtn = new St.Button({ style_class: 'control-btn', child: new St.Icon({ icon_name: 'media-skip-backward-symbolic', icon_size: 24 }), reactive: true, can_focus: true });
         this._prevBtn.connectObject('button-release-event', () => { this._controller.previous(); return Clutter.EVENT_STOP; }, this);
+        this._prevBtn.connectObject('touch-event', (actor, event) => { if (event.type() === Clutter.EventType.TOUCH_END) { this._controller.previous(); return Clutter.EVENT_STOP; } return Clutter.EVENT_PROPAGATE; }, this);
 
         this._playPauseIcon = new St.Icon({ icon_name: 'media-playback-start-symbolic', icon_size: 24 });
         this._playPauseBtn = new St.Button({ style_class: 'control-btn', child: this._playPauseIcon, reactive: true, can_focus: true });
         this._playPauseBtn.connectObject('button-release-event', () => { this._controller.togglePlayback(); return Clutter.EVENT_STOP; }, this);
+        this._playPauseBtn.connectObject('touch-event', (actor, event) => { if (event.type() === Clutter.EventType.TOUCH_END) { this._controller.togglePlayback(); return Clutter.EVENT_STOP; } return Clutter.EVENT_PROPAGATE; }, this);
 
         this._nextBtn = new St.Button({ style_class: 'control-btn', child: new St.Icon({ icon_name: 'media-skip-forward-symbolic', icon_size: 24 }), reactive: true, can_focus: true });
         this._nextBtn.connectObject('button-release-event', () => { this._controller.next(); return Clutter.EVENT_STOP; }, this);
+        this._nextBtn.connectObject('touch-event', (actor, event) => { if (event.type() === Clutter.EventType.TOUCH_END) { this._controller.next(); return Clutter.EVENT_STOP; } return Clutter.EVENT_PROPAGATE; }, this);
 
         this._repeatIcon = new St.Icon({ icon_name: 'media-playlist-repeat-symbolic', icon_size: 16 });
         this._repeatBtn = new St.Button({ style_class: 'control-btn-secondary', child: this._repeatIcon, reactive: true, can_focus: true });
         this._repeatBtn.connectObject('button-release-event', () => { this._controller.toggleLoop(); return Clutter.EVENT_STOP; }, this);
+        this._repeatBtn.connectObject('touch-event', (actor, event) => { if (event.type() === Clutter.EventType.TOUCH_END) { this._controller.toggleLoop(); return Clutter.EVENT_STOP; } return Clutter.EVENT_PROPAGATE; }, this);
 
         controlsRow.add_child(this._shuffleBtn);
         controlsRow.add_child(this._prevBtn);      
@@ -550,12 +567,29 @@ class ExpandedPlayer extends St.Widget {
             track_hover: true,
             style: `border-radius: 12px; padding: 8px; background-color: ${currentSelected === '' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)'}; transition-duration: 150ms;`
         });
+        
         autoBtn.connectObject('button-release-event', () => {
             this._settings.set_string('selected-player-bus', '');
             this._controller._updateUI();
             this._updatePlayerSelector(); 
+            this.hide();
             return Clutter.EVENT_STOP;
         }, this);
+        autoBtn.connectObject('touch-event', (actor, event) => {
+            let type = event.type();
+            if (type === Clutter.EventType.TOUCH_BEGIN) {
+                return Clutter.EVENT_PROPAGATE; 
+            }
+            if (type === Clutter.EventType.TOUCH_END) {
+                this._settings.set_string('selected-player-bus', '');
+                this._controller._updateUI();
+                this._updatePlayerSelector(); 
+                this.hide();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        }, this);
+        
         autoBtn.connect('notify::hover', () => {
             if (this._settings.get_string('selected-player-bus') === '') return;
             autoBtn.set_style(`border-radius: 12px; padding: 8px; background-color: ${autoBtn.hover ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)'}; transition-duration: 150ms;`);
@@ -584,8 +618,23 @@ class ExpandedPlayer extends St.Widget {
                 this._settings.set_string('selected-player-bus', busName);
                 this._controller._updateUI();
                 this._updatePlayerSelector(); 
+                this.hide();
                 return Clutter.EVENT_STOP;
             }, this);
+            btn.connectObject('touch-event', (actor, event) => {
+                let type = event.type();
+                if (type === Clutter.EventType.TOUCH_BEGIN) {
+                    return Clutter.EVENT_PROPAGATE;
+                }
+                if (type === Clutter.EventType.TOUCH_END) {
+                    this._settings.set_string('selected-player-bus', busName);
+                    this._controller._updateUI();
+                    this._updatePlayerSelector(); 
+                    this.hide();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            }, this);
 
             btn.connect('notify::hover', () => {
                 if (this._settings.get_string('selected-player-bus') === busName) return;
@@ -1189,28 +1238,52 @@ class MusicPill extends St.Widget {
     });
     this._body.add_child(this._artBin);
     this._prevBtn = new St.Button({ style_class: 'tablet-skip-btn', child: new St.Icon({ icon_name: 'media-skip-backward-symbolic', icon_size: 20 }), reactive: true });
+    this._playPauseBtnTablet = new St.Button({ style_class: 'tablet-skip-btn', child: new St.Icon({ icon_name: 'media-playback-start-symbolic', icon_size: 20 }), reactive: true });
     this._nextBtn = new St.Button({ style_class: 'tablet-skip-btn', child: new St.Icon({ icon_name: 'media-skip-forward-symbolic', icon_size: 20 }), reactive: true });
-   
+
     this._prevBtn.connectObject('button-press-event', () => Clutter.EVENT_STOP, this);
+    this._playPauseBtnTablet.connectObject('button-press-event', () => Clutter.EVENT_STOP, this);
     this._nextBtn.connectObject('button-press-event', () => Clutter.EVENT_STOP, this);
 
     this._prevBtn.connectObject('button-release-event', () => { 
-    	if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
-        this._controller.previous(); 
-        return Clutter.EVENT_STOP; 
+        if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+        this._controller.previous(); return Clutter.EVENT_STOP; 
     }, this);
-    
+    this._prevBtn.connectObject('touch-event', (actor, event) => {
+        if (event.type() === Clutter.EventType.TOUCH_BEGIN) return Clutter.EVENT_STOP;
+        if (event.type() === Clutter.EventType.TOUCH_END) {
+            if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+            this._controller.previous(); return Clutter.EVENT_STOP;
+        } return Clutter.EVENT_PROPAGATE;
+    }, this);
+
+    this._playPauseBtnTablet.connectObject('button-release-event', () => { 
+        if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+        this._controller.togglePlayback(); return Clutter.EVENT_STOP; 
+    }, this);
+    this._playPauseBtnTablet.connectObject('touch-event', (actor, event) => {
+        if (event.type() === Clutter.EventType.TOUCH_BEGIN) return Clutter.EVENT_STOP;
+        if (event.type() === Clutter.EventType.TOUCH_END) {
+            if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+            this._controller.togglePlayback(); return Clutter.EVENT_STOP;
+        } return Clutter.EVENT_PROPAGATE;
+    }, this);
+
     this._nextBtn.connectObject('button-release-event', () => { 
-   	if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
-        this._controller.next(); 
-        return Clutter.EVENT_STOP; 
+        if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+        this._controller.next(); return Clutter.EVENT_STOP; 
     }, this);
-    
-    this._settings.connectObject('changed::popup-follow-custom-bg', () => { this._applyStyle(this._displayedColor.r, this._displayedColor.g, this._displayedColor.b); }, this);
-    this._settings.connectObject('changed::popup-follow-custom-text', () => { this._applyStyle(this._displayedColor.r, this._displayedColor.g, this._displayedColor.b); }, this);
+    this._nextBtn.connectObject('touch-event', (actor, event) => {
+        if (event.type() === Clutter.EventType.TOUCH_BEGIN) return Clutter.EVENT_STOP;
+        if (event.type() === Clutter.EventType.TOUCH_END) {
+            if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+            this._controller.next(); return Clutter.EVENT_STOP;
+        } return Clutter.EVENT_PROPAGATE;
+    }, this);
 
     this._tabletControls = new St.BoxLayout({ vertical: false, y_align: Clutter.ActorAlign.CENTER, style: 'margin-left: 6px;' });
     this._tabletControls.add_child(this._prevBtn);
+    this._tabletControls.add_child(this._playPauseBtnTablet);
     this._tabletControls.add_child(this._nextBtn);
     this._body.add_child(this._tabletControls);
 
@@ -1270,6 +1343,22 @@ class MusicPill extends St.Widget {
         return Clutter.EVENT_STOP;
     }, this);
 
+    this.connectObject('touch-event', (actor, event) => {
+        let type = event.type();
+        if (type === Clutter.EventType.TOUCH_BEGIN) {
+            if (!this._body) return Clutter.EVENT_STOP;
+            this._body.ease({ scale_x: 0.96, scale_y: 0.96, duration: 80, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            return Clutter.EVENT_STOP;
+        } else if (type === Clutter.EventType.TOUCH_END) {
+            if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
+            if (!this._body) return Clutter.EVENT_STOP;
+            this._body.ease({ scale_x: 1.0, scale_y: 1.0, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_BACK });
+            this._handleLeftClick();
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
+    }, this);
+
     this.connectObject('button-release-event', (actor, event) => {
         if (this._hoverTimeout) { GLib.source_remove(this._hoverTimeout); this._hoverTimeout = null; }
         if (!this._body) return Clutter.EVENT_STOP;
@@ -1288,44 +1377,7 @@ class MusicPill extends St.Widget {
         }
 
         if (button === 1) {
-            let singleAction = this._settings.get_string('action-left-click');
-            let doubleAction = this._settings.get_string('action-double-click');
-
-            if (!doubleAction || doubleAction === 'none') {
-                if (singleAction && singleAction !== 'none') this._controller.performAction(singleAction);
-                return Clutter.EVENT_STOP;
-            }
-
-            let now = Date.now();
-            
-            let doubleClickTime = 200;
-
-            if (this._lastLeftClickTime && (now - this._lastLeftClickTime) <= doubleClickTime) {
-                this._lastLeftClickTime = 0;
-
-                if (this._singleClickTimerId) {
-                    GLib.source_remove(this._singleClickTimerId);
-                    this._singleClickTimerId = null;
-                }
-                
-                this._controller.performAction(doubleAction);
-            } else {
-                this._lastLeftClickTime = now;
-
-                if (this._singleClickTimerId) {
-                    GLib.source_remove(this._singleClickTimerId);
-                }
-
-                this._singleClickTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, doubleClickTime, () => {
-                    this._singleClickTimerId = null;
-                    this._lastLeftClickTime = 0; 
-                    
-                    if (singleAction && singleAction !== 'none') {
-                        this._controller.performAction(singleAction);
-                    }
-                    return GLib.SOURCE_REMOVE;
-                });
-            }
+            this._handleLeftClick();
         }
 
         return Clutter.EVENT_STOP;
@@ -1491,21 +1543,19 @@ class MusicPill extends St.Widget {
     this._updateDimensions();
 
     this._isActuallyVisible = true;
-    this._realVisibilityTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-        try {
-            if (this.get_parent()) {
-                this._checkRealVisibility();
-            }
-            return GLib.SOURCE_CONTINUE;
-        } catch (e) {
-            console.debug(`[Dynamic Music Pill] Visibility timer stopped (actor disposed): ${e.message}`);
+    this._realVisibilityTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+        if (this._disposed || !this || String(this).includes('disposed') || !this.get_parent()) {
             this._realVisibilityTimerId = null;
             return GLib.SOURCE_REMOVE;
         }
-    });
-  }
+
+        this._checkRealVisibility();
+        return GLib.SOURCE_CONTINUE;
+    });
+  }
 
   destroy() {
+      this._disposed = true;
       if (this._realVisibilityTimerId) { GLib.source_remove(this._realVisibilityTimerId); this._realVisibilityTimerId = null; }
       if (this._allocTimer) { GLib.source_remove(this._allocTimer); this._allocTimer = null; }
       if (this._colorAnimId) { GLib.source_remove(this._colorAnimId); this._colorAnimId = null; }
@@ -1521,27 +1571,49 @@ class MusicPill extends St.Widget {
       super.destroy();
   }
   
-  _checkRealVisibility() {
-      let isVisible = false;
+  _handleLeftClick() {
+      let singleAction = this._settings.get_string('action-left-click');
+      let doubleAction = this._settings.get_string('action-double-click');
 
-      if (this.mapped && this.get_paint_opacity() > 0) {
-          let [x, y] = this.get_transformed_position();
-          let [w, h] = this.get_transformed_size();
-          let monitor = Main.layoutManager.findMonitorForActor(this);
-          
-          if (monitor) {
-              if (x + w > monitor.x && x < monitor.x + monitor.width &&
-                  y + h > monitor.y && y < monitor.y + monitor.height) {
-                  isVisible = true;
-              }
-          }
+      if (!doubleAction || doubleAction === 'none') {
+          if (singleAction && singleAction !== 'none') this._controller.performAction(singleAction);
+          return;
       }
 
-      if (this._isActuallyVisible !== isVisible) {
-          this._isActuallyVisible = isVisible;
-          this._updatePlayingStates();
+      let now = Date.now();
+      let doubleClickTime = 200;
+
+      if (this._lastLeftClickTime && (now - this._lastLeftClickTime) <= doubleClickTime) {
+          this._lastLeftClickTime = 0;
+          if (this._singleClickTimerId) {
+              GLib.source_remove(this._singleClickTimerId);
+              this._singleClickTimerId = null;
+          }
+          this._controller.performAction(doubleAction);
+      } else {
+          this._lastLeftClickTime = now;
+          if (this._singleClickTimerId) {
+              GLib.source_remove(this._singleClickTimerId);
+          }
+          this._singleClickTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, doubleClickTime, () => {
+              this._singleClickTimerId = null;
+              this._lastLeftClickTime = 0; 
+              if (singleAction && singleAction !== 'none') {
+                  this._controller.performAction(singleAction);
+              }
+              return GLib.SOURCE_REMOVE;
+          });
       }
   }
+  
+  _checkRealVisibility() {
+      let isVisible = this.mapped;
+
+      if (this._isActuallyVisible !== isVisible) {
+          this._isActuallyVisible = isVisible;
+          this._updatePlayingStates();
+      }
+  }
 
   _updatePlayingStates() {
       let isVisibleAndActive = this._isActuallyVisible && !this._gameModeActive;
@@ -1635,6 +1707,7 @@ class MusicPill extends St.Widget {
   }
 
   _updateDimensions() {
+	if (this.toString().includes('disposed') || !this.get_parent()) return;
         let target = this._settings.get_int('target-container');
         this._inPanel = (target > 0);
         
@@ -1731,16 +1804,25 @@ class MusicPill extends St.Widget {
         this._artWidget.setShadowStyle(this._shadowCSS);
         this._visualizer.setMode(visStyle);
 
-        let tabletMode = this._settings.get_boolean('tablet-mode');
+        let tabletSetting = 0;
+        try {
+            let type = this._settings.settings_schema.get_key('tablet-mode').get_value_type().dup_string();
+            tabletSetting = type === 'b' ? (this._settings.get_boolean('tablet-mode') ? 3 : 0) : this._settings.get_int('tablet-mode');
+        } catch (e) { tabletSetting = 0; }
         
-        if (tabletMode && !this._gameModeActive) {
+        if (tabletSetting > 0 && !this._gameModeActive) {
             this._tabletControls.show();
+            this._prevBtn.visible = (tabletSetting === 1 || tabletSetting === 3);
+            this._nextBtn.visible = (tabletSetting === 1 || tabletSetting === 3);
+            if (this._playPauseBtnTablet)
+                this._playPauseBtnTablet.visible = (tabletSetting === 2 || tabletSetting === 3);
         } else {
             this._tabletControls.hide();
         }
-        if (isSidePanel) {
+        
+        if (this._isSidePanel) {
             this._tabletControls.vertical = true;
-            this._tabletControls.set_style('margin-top: 6px; margin-left: 0px;');
+            this._tabletControls.set_style('margin: 0px;'); 
         } else {
             this._tabletControls.vertical = false;
             this._tabletControls.set_style('margin-left: 6px; margin-top: 0px;');
@@ -1756,7 +1838,7 @@ class MusicPill extends St.Widget {
             this._fadeLeft.set_width(10);
             this._fadeRight.set_width(10);
             
-            if (!tabletMode || this._gameModeActive) {
+            if (!tabletSetting || this._gameModeActive) {
                 let artMargin = (width < 180 && !hideText) ? 4 : 8;
                 if (isSidePanel) this._artBin.set_style(`margin-bottom: ${artMargin}px; margin-right: 0px;`);
                 else this._artBin.set_style(`margin-right: ${artMargin}px; margin-bottom: 0px;`);
@@ -1805,7 +1887,7 @@ class MusicPill extends St.Widget {
             let elementsH = this._padY * 2;
             
             if (this._artBin.visible) {
-                let artM = (!tabletMode || this._gameModeActive) ? (((width < 220 && !hideText) || visStyle === 0) ? ((width < 180 && !hideText) ? 4 : 8) : this._settings.get_int('visualizer-padding')) : 2;
+                let artM = (!tabletSetting || this._gameModeActive) ? (((width < 220 && !hideText) || visStyle === 0) ? ((width < 180 && !hideText) ? 4 : 8) : this._settings.get_int('visualizer-padding')) : 2;
                 elementsH += finalArtSize + artM;
             }
             if (this._visBin.visible) elementsH += this._visBin.get_preferred_height(-1)[1] + this._settings.get_int('visualizer-padding');
@@ -1828,7 +1910,7 @@ class MusicPill extends St.Widget {
                 
                 let elementsW = this._padX * 2;
                 if (this._artBin.visible) {
-                    let artM = (!tabletMode || this._gameModeActive) ? (((confWidth < 220 && !hideText) || visStyle === 0) ? ((confWidth < 180 && !hideText) ? 4 : 8) : this._settings.get_int('visualizer-padding')) : 2;
+                    let artM = (!tabletSetting || this._gameModeActive) ? (((confWidth < 220 && !hideText) || visStyle === 0) ? ((confWidth < 180 && !hideText) ? 4 : 8) : this._settings.get_int('visualizer-padding')) : 2;
                     elementsW += finalArtSize + artM;
                 }
                 if (this._tabletControls.visible) elementsW += this._tabletControls.get_preferred_width(-1)[1];
@@ -1915,6 +1997,16 @@ class MusicPill extends St.Widget {
     }
 
     this._currentStatus = status;
+    
+    if (this._playPauseBtnTablet) {
+        let icon = this._playPauseBtnTablet.get_child();
+        if (icon) {
+            icon.icon_name = (status === 'Playing') 
+                ? 'media-playback-pause-symbolic' 
+                : 'media-playback-start-symbolic';
+        }
+    }
+    
 
     if (busChanged) {
         this._currentBusName = busName;
@@ -2277,10 +2369,10 @@ class PlayerSelectorMenu extends St.Widget {
         this._backgroundBtn.connectObject('clicked', () => { this.hide(); }, this);
         this.add_child(this._backgroundBtn);
 
-        this._box = new St.BoxLayout({ vertical: true, reactive: true });
-        this._box.connectObject('button-press-event', () => Clutter.EVENT_STOP, this);
+        this._box = new St.BoxLayout({ reactive: true });
+        this._box.vertical = true;
         this.add_child(this._box);
-    }
+    }
 
     populate() {
         this._box.destroy_all_children();
@@ -2335,11 +2427,21 @@ class PlayerSelectorMenu extends St.Widget {
         });
         
         
-        autoBtn.connectObject('button-release-event', () => {
+        autoBtn.connectObject('clicked', () => {
             this._settings.set_string('selected-player-bus', '');
             this._controller._updateUI();
             this.hide();
-            return Clutter.EVENT_STOP;
+        }, this);
+
+        autoBtn.connectObject('touch-event', (actor, event) => {
+            let type = event.type();
+            if (type === Clutter.EventType.TOUCH_END) {
+                this._settings.set_string('selected-player-bus', '');
+                this._controller._updateUI();
+                this.hide();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
         }, this);
 
         autoBtn.connect('notify::hover', () => {
@@ -2378,12 +2480,21 @@ class PlayerSelectorMenu extends St.Widget {
                 style: `margin-bottom: 8px; border-radius: 12px; padding: 10px; background-color: ${isSelected ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.05)'}; transition-duration: 150ms;` 
             });
 
-            // JAVÍTÁS 1: 'clicked' helyett 'button-release-event'
-            btn.connectObject('button-release-event', () => {
+            btn.connectObject('clicked', () => {
                 this._settings.set_string('selected-player-bus', busName);
                 this._controller._updateUI();
                 this.hide();
-                return Clutter.EVENT_STOP;
+            }, this);
+
+            btn.connectObject('touch-event', (actor, event) => {
+                let type = event.type();
+                if (type === Clutter.EventType.TOUCH_END) {
+                    this._settings.set_string('selected-player-bus', busName);
+                    this._controller._updateUI();
+                    this.hide();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
             }, this);
 
             btn.connect('notify::hover', () => {
