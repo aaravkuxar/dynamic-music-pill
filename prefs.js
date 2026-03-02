@@ -205,10 +205,16 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
         lyricsRow.add_suffix(lyricsToggle);
         genGroup.add(lyricsRow);
         
-        const tabletModeRow = new Adw.ActionRow({ title: _('Tablet Mode'), subtitle: _('Show skip buttons directly on the pill') });
-	const tabletModeToggle = new Gtk.Switch({ active: settings.get_boolean('tablet-mode'), valign: Gtk.Align.CENTER });
-	settings.bind('tablet-mode', tabletModeToggle, 'active', Gio.SettingsBindFlags.DEFAULT);
-	tabletModeRow.add_suffix(tabletModeToggle);
+        const tabletModeRow = new Adw.ComboRow({
+	    title: 'Tablet Mode Controls',
+	    subtitle: 'Show media buttons directly on the pill',
+	    model: new Gtk.StringList({
+		strings: ['Off', 'Skip Only', 'Play/Pause Only', 'All Controls']
+	    }),
+	    selected: settings.get_int('tablet-mode'),
+	});
+
+	settings.bind('tablet-mode', tabletModeRow, 'selected', Gio.SettingsBindFlags.DEFAULT);
 	genGroup.add(tabletModeRow);
 
 	const inlineArtistRow = new Adw.ActionRow({ title: _('Inline Artist'), subtitle: _('Show "Title • Artist" when the widget is squeezed') });
