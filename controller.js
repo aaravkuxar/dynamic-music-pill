@@ -866,6 +866,11 @@ export class MusicController {
                 if (Array.isArray(artist)) artist = artist.map(a => smartUnpack(a)).join(', ');
                 currentArt = smartUnpack(metaObj['mpris:artUrl']);
             }
+            
+            if (!title && active._busName) {
+                title = active._identity || "Unknown Player";
+                artist = "No active media";
+            }
 
             let rawName = active._busName || "";
             let cacheKey = rawName.includes('.instance') ? rawName.split('.instance')[0] : rawName;
