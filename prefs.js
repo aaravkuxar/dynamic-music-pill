@@ -25,7 +25,7 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
             'fallback-art-path','popup-show-visualizer', 'popup-hide-pill-visualizer','compatibility-delay',
             'popup-follow-custom-bg', 'popup-follow-custom-text','action-hover', 'hover-delay', 'selected-player-bus',
             'popup-show-player-selector','show-pill-border','invert-scroll-direction','always-show-pill','popup-hide-on-leave',
-            'visualizer-bars','enable-lyrics'
+            'visualizer-bars','enable-lyrics','app-name-mapping', 'lyric-fade-enable', 'lyric-fade-duration'
         ];
 
         // =========================================
@@ -133,23 +133,32 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
         const scrollActionModel = new Gtk.StringList();
         scrollActionModel.append(_("Change Track"));
         scrollActionModel.append(_("Change Volume"));
+        scrollActionModel.append(_("Switch Player")); 
 
         let currentAction = settings.get_string('scroll-action');
+        let selectedIdx = 0;
+        if (currentAction === 'volume') selectedIdx = 1;
+        else if (currentAction === 'player') selectedIdx = 2;
 
         const scrollActionRow = new Adw.ComboRow({
             title: _('Scroll Action'),
             subtitle: _('Choose what scrolling on the pill should do'),
             model: scrollActionModel,
-            selected: currentAction === 'volume' ? 1 : 0
+            selected: selectedIdx
         });
 
         settings.connect('changed::scroll-action', () => {
             const action = settings.get_string('scroll-action');
-            scrollActionRow.selected = (action === 'volume') ? 1 : 0;
+            if (action === 'volume') scrollActionRow.selected = 1;
+            else if (action === 'player') scrollActionRow.selected = 2;
+            else scrollActionRow.selected = 0;
         });
 
         scrollActionRow.connect('notify::selected', () => {
-            settings.set_string('scroll-action', scrollActionRow.selected === 1 ? 'volume' : 'track');
+            let val = 'track';
+            if (scrollActionRow.selected === 1) val = 'volume';
+            else if (scrollActionRow.selected === 2) val = 'player';
+            settings.set_string('scroll-action', val);
         });
 
         settings.bind('enable-scroll-controls', scrollActionRow, 'sensitive', Gio.SettingsBindFlags.DEFAULT);
@@ -205,6 +214,28 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
         settings.bind('enable-lyrics', lyricsToggle, 'active', Gio.SettingsBindFlags.DEFAULT);
         lyricsRow.add_suffix(lyricsToggle);
         genGroup.add(lyricsRow);
+        
+        const lyricFadeRow = new Adw.ActionRow({
+            title: _('Lyrics Fade-in Effect'),
+            subtitle: _('Smoothly fade in new lyric lines')
+        });
+        const lyricFadeToggle = new Gtk.Switch({
+            active: settings.get_boolean('lyric-fade-enable'),
+            valign: Gtk.Align.CENTER
+        });
+        settings.bind('lyric-fade-enable', lyricFadeToggle, 'active', Gio.SettingsBindFlags.DEFAULT);
+        settings.bind('enable-lyrics', lyricFadeRow, 'sensitive', Gio.SettingsBindFlags.DEFAULT);
+        lyricFadeRow.add_suffix(lyricFadeToggle);
+        genGroup.add(lyricFadeRow);
+
+        const lyricFadeDurationRow = new Adw.SpinRow({
+            title: _('Fade Duration (ms)'),
+            adjustment: new Gtk.Adjustment({ lower: 50, upper: 2000, step_increment: 50 })
+        });
+        settings.bind('lyric-fade-duration', lyricFadeDurationRow, 'value', Gio.SettingsBindFlags.DEFAULT);
+        
+        settings.bind('lyric-fade-enable', lyricFadeDurationRow, 'sensitive', Gio.SettingsBindFlags.DEFAULT);
+        genGroup.add(lyricFadeDurationRow);
         
         const tabletModeRow = new Adw.ComboRow({
 	    title: 'Tablet Mode Controls',
@@ -891,6 +922,243 @@ export default class DynamicMusicPrefs extends ExtensionPreferences {
 
         compatGroup.add(detectedPlayersRow);
         otherPage.add(compatGroup);
+        
+        const mappingHelpGroup = new Adw.PreferencesGroup();
+        const helpExpander = new Adw.ExpanderRow({
+            title: _('💡 How to find the correct App ID?'),
+            subtitle: _('Click here for a quick guide and examples')
+        });
+
+        const helpLabel = new Gtk.Label({
+            label: "To allow the extension to open/close your player, you need to provide its exact window name (App ID).\n\n" +
+                   "<b>Common Examples:</b>\n" +
+                   "• Spotify (Flatpak): <b>com.spotify.Client</b>\n" +
+                   "• VLC: <b>vlc</b>\n" +
+                   "• YouTube Music (Web App): <b>youtube-music</b>\n" +
+                   "• High Tide: <b>io.github.nokse22.high-tide</b>\n" +
+                   "• Browsers: <b>chromium</b>, <b>firefox</b>, <b>brave-browser</b>\n\n" +
+                   "<b>How to find it manually:</b>\n" +
+                   "1. Press <b>Alt + F2</b>, type <b>lg</b>, and press Enter.\n" +
+                   "2. Click on the <b>Windows</b> tab in the top right corner.\n" +
+                   "3. Find your music player in the list.\n" +
+                   "4. Look at the <b>wmclass:</b> or <b>app:</b> field. That is your App ID! <i>(Remove the .desktop part)</i>\n" +
+                   "5. Press Esc to close the debugger.",
+            use_markup: true,
+            justify: Gtk.Justification.LEFT,
+            xalign: 0,
+            wrap: true,
+            margin_top: 15, 
+            margin_bottom: 15, 
+            margin_start: 15, 
+            margin_end: 15
+        });
+
+        helpExpander.add_row(helpLabel);
+        mappingHelpGroup.add(helpExpander);
+        otherPage.add(mappingHelpGroup);
+
+        const appMappingGroup = new Adw.PreferencesGroup({
+            title: _('Saved App Mappings'),
+            description: _('Edit the target App ID for manually mapped players, or remove them.')
+        });
+        otherPage.add(appMappingGroup);
+
+        let _isRefreshing = false; 
+
+        const refreshAppMappings = () => {
+            if (_isRefreshing) return;
+            _isRefreshing = true;
+
+            let child = appMappingGroup.get_first_child();
+            while (child) {
+                let next = child.get_next_sibling();
+                appMappingGroup.remove(child);
+                child = next;
+            }
+
+            let mapStr = settings.get_string('app-name-mapping') || '';
+            let pairs = mapStr.split(',').filter(p => p.trim() !== '');
+
+            if (pairs.length === 0) {
+                appMappingGroup.set_description(_('No manual mappings saved.'));
+                _isRefreshing = false;
+                return;
+            }
+
+            appMappingGroup.set_description(_('Type the correct App ID, then hit Enter or click the Save icon!'));
+
+            pairs.forEach(pair => {
+                let parts = pair.split(':');
+                if (parts.length >= 2) {
+                    let mprisName = parts[0].trim();
+                    let targetId = parts.slice(1).join(':').trim();
+
+                    let row = new Adw.EntryRow({
+                        title: mprisName,
+                        text: targetId
+                    });
+
+                    let btnBox = new Gtk.Box({ spacing: 6, valign: Gtk.Align.CENTER });
+
+                    let saveBtn = new Gtk.Button({
+                        icon_name: 'document-save-symbolic',
+                        valign: Gtk.Align.CENTER,
+                        css_classes: ['flat', 'suggested-action'],
+                        tooltip_text: _('Save App ID')
+                    });
+
+                    const saveAction = () => {
+                        let newId = row.text.trim();
+                        if (newId === '') return;
+
+                        let currentStr = settings.get_string('app-name-mapping') || '';
+                        let currentPairs = currentStr.split(',').filter(p => p.trim() !== '');
+                        
+                        let newPairs = currentPairs.map(p => {
+                            if (p.startsWith(mprisName + ':')) {
+                                return `${mprisName}:${newId}`;
+                            }
+                            return p;
+                        });
+                        
+                        settings.set_string('app-name-mapping', newPairs.join(','));
+                        
+                        saveBtn.set_icon_name('object-select-symbolic');
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
+                            if (saveBtn) saveBtn.set_icon_name('document-save-symbolic');
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    };
+
+                    saveBtn.connect('clicked', saveAction);
+                    row.connect('apply', saveAction);
+
+                    let deleteBtn = new Gtk.Button({
+                        icon_name: 'user-trash-symbolic',
+                        valign: Gtk.Align.CENTER,
+                        css_classes: ['flat', 'destructive-action'],
+                        tooltip_text: _('Delete Mapping')
+                    });
+
+                    deleteBtn.connect('clicked', () => {
+                        let currentStr = settings.get_string('app-name-mapping') || '';
+                        let currentPairs = currentStr.split(',').filter(p => p.trim() !== '');
+                        
+                        let newPairs = currentPairs.filter(p => !p.startsWith(mprisName + ':'));
+                        settings.set_string('app-name-mapping', newPairs.join(','));
+                        
+                        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                            refreshAppMappings(); 
+                            if (typeof updateDetectedPlayers === 'function') updateDetectedPlayers();
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    });
+
+                    btnBox.append(saveBtn);
+                    btnBox.append(deleteBtn);
+                    row.add_suffix(btnBox);
+                    
+                    appMappingGroup.add(row);
+                }
+            });
+            _isRefreshing = false;
+        };
+
+        refreshAppMappings();
+
+        const activePlayersGroup = new Adw.PreferencesGroup({
+            title: 'Running Players Detection',
+            description: 'Click on a detected player to automatically fill the mapping.'
+        });
+        otherPage.add(activePlayersGroup);
+
+        const updateDetectedPlayers = () => {
+            let child = activePlayersGroup.get_first_child();
+            while (child) {
+                let next = child.get_next_sibling();
+                activePlayersGroup.remove(child);
+                child = next;
+            }
+            
+            let connection = Gio.bus_get_sync(Gio.BusType.SESSION, null);
+            connection.call(
+                'org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus', 'ListNames',
+                null, null, Gio.DBusCallFlags.NONE, -1, null,
+                (c, res) => {
+                    try {
+                        let r = c.call_finish(res);
+                        let names = r.deep_unpack()[0];
+                        let mprisNames = names.filter(n => n.startsWith('org.mpris.MediaPlayer2.'));
+
+                        if (mprisNames.length === 0) {
+                            activePlayersGroup.set_description('No active players detected. Open a music app first!');
+                        } else {
+                            activePlayersGroup.set_description('Select a player to help the extension identify it:');
+                            
+                            mprisNames.forEach(fullBusName => {
+                                let shortName = fullBusName.replace('org.mpris.MediaPlayer2.', '');
+                                
+                                if (shortName.includes('.instance')) {
+                                    shortName = shortName.split('.instance')[0];
+                                }
+                                
+                                let currentMapStr = settings.get_string('app-name-mapping') || '';
+                                if (currentMapStr.includes(shortName + ':')) {
+                                    return; 
+                                }
+                                
+                                let row = new Adw.ActionRow({
+                                    title: shortName,
+                                    subtitle: `Bus: ${fullBusName}`
+                                });
+
+                                let btn = new Gtk.Button({
+                                    label: 'Use This',
+                                    css_classes: ['suggested-action'],
+                                    valign: Gtk.Align.CENTER
+                                });
+
+                                btn.connect('clicked', () => {
+                                    let currentVal = settings.get_string('app-name-mapping');
+                                    if (currentVal.includes(shortName + ':')) return;
+
+                                    let newVal = currentVal ? `${currentVal},${shortName}:ENTER_APP_ID_HERE` : `${shortName}:ENTER_APP_ID_HERE`;
+                                    settings.set_string('app-name-mapping', newVal);
+                                    
+                                    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                                        refreshAppMappings();
+                                        updateDetectedPlayers();
+                                        return GLib.SOURCE_REMOVE;
+                                    });
+                                });
+
+                                row.add_suffix(btn);
+                                activePlayersGroup.add(row);
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Error fetching DBus names:', e);
+                    }
+                }
+            );
+        };
+
+        const refreshMappingRow = new Adw.ActionRow({
+            title: _('Refresh List'),
+            subtitle: _('Click to scan for active players again')
+        });
+
+        const refreshMappingBtn = new Gtk.Button({ 
+            icon_name: 'view-refresh-symbolic', 
+            valign: Gtk.Align.CENTER,
+            css_classes: ['flat']
+        });
+
+        refreshMappingBtn.connect('clicked', updateDetectedPlayers);
+        refreshMappingRow.add_suffix(refreshMappingBtn);
+        activePlayersGroup.add(refreshMappingRow);
+
+        updateDetectedPlayers();
 
         const backupGroup = new Adw.PreferencesGroup({ title: _('Backup & Restore') });
         
