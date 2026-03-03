@@ -88,7 +88,7 @@ class ScrollLabel extends St.Widget {
         this._text = "";
         this._gameMode = false;
         this._isScrolling = false;
-	this._container = new St.BoxLayout();
+	this._container = new St.BoxLayout({ x_expand: true, y_expand: true, x_align: Clutter.ActorAlign.START, y_align: Clutter.ActorAlign.CENTER });
 	this._container.layout_manager.orientation = Clutter.Orientation.HORIZONTAL;
         this.add_child(this._container);
 
@@ -116,6 +116,14 @@ class ScrollLabel extends St.Widget {
         }, this);
 
         this.connect('destroy', this._cleanup.bind(this));
+    }
+    
+    vfunc_get_preferred_width(forHeight) {
+        if (this._label1) {
+            let [minW, natW] = this._label1.get_preferred_width(forHeight);
+            return [0, natW]; 
+        }
+        return super.vfunc_get_preferred_width(forHeight);
     }
     
     setLabelStyle(css) {
@@ -391,6 +399,17 @@ class WaveformVisualizer extends St.BoxLayout {
     }
 });
 
+const PixelSnappedBox = GObject.registerClass(
+class PixelSnappedBox extends St.BoxLayout {
+    vfunc_allocate(box) {
+        box.x1 = Math.round(box.x1);
+        box.y1 = Math.round(box.y1);
+        box.x2 = Math.round(box.x2);
+        box.y2 = Math.round(box.y2);
+        super.vfunc_allocate(box);
+    }
+});
+
 export const ExpandedPlayer = GObject.registerClass(
 class ExpandedPlayer extends St.Widget {
     _init(controller) {
@@ -425,7 +444,7 @@ class ExpandedPlayer extends St.Widget {
         this._backgroundBtn.connectObject('clicked', () => { this.hide(); }, this);
         this.add_child(this._backgroundBtn);
 
-        this._box = new St.BoxLayout({
+        this._box = new PixelSnappedBox({
             style_class: 'music-pill-expanded',
             reactive: true
         });
@@ -434,7 +453,7 @@ class ExpandedPlayer extends St.Widget {
         this._box.connectObject('touch-event', () => Clutter.EVENT_STOP, this);
         this.add_child(this._box);
         
-        this._playerSelectorBox = new St.BoxLayout({
+        this._playerSelectorBox = new PixelSnappedBox({
             vertical: false,
             x_align: Clutter.ActorAlign.CENTER,
             style: 'margin-bottom: 12px; spacing: 10px;'
@@ -446,7 +465,7 @@ class ExpandedPlayer extends St.Widget {
             if (this.visible) this.animateResize();
         }, this);
 
-        let topRow = new St.BoxLayout({ style_class: 'expanded-top-row', vertical: false, y_align: Clutter.ActorAlign.CENTER });
+        let topRow = new PixelSnappedBox({ style_class: 'expanded-top-row', vertical: false, y_align: Clutter.ActorAlign.CENTER });
 
         this._vinyl = new St.Widget({
             style_class: 'vinyl-container',
@@ -465,7 +484,7 @@ class ExpandedPlayer extends St.Widget {
         });
         topRow.add_child(this._vinylBin);
 
-        let infoBox = new St.BoxLayout({
+        let infoBox = new PixelSnappedBox({
             style_class: 'track-info-box',
             y_align: Clutter.ActorAlign.CENTER,
             x_expand: true,
@@ -491,7 +510,7 @@ class ExpandedPlayer extends St.Widget {
         topRow.add_child(this._visBin);
         this._box.add_child(topRow);
 
-        let progressBox = new St.BoxLayout({ style_class: 'progress-container', vertical: false, y_align: Clutter.ActorAlign.CENTER });
+        let progressBox = new PixelSnappedBox({ style_class: 'progress-container', vertical: false, y_align: Clutter.ActorAlign.CENTER });
         this._currentTimeLabel = new St.Label({ style_class: 'progress-time', text: '0:00', x_align: Clutter.ActorAlign.END });
         this._totalTimeLabel = new St.Label({ style_class: 'progress-time', text: '0:00', x_align: Clutter.ActorAlign.START });
 
@@ -517,7 +536,7 @@ class ExpandedPlayer extends St.Widget {
         progressBox.add_child(this._totalTimeLabel);
         this._box.add_child(progressBox);
 
-        let controlsRow = new St.BoxLayout({ style_class: 'controls-row', vertical: false, x_align: Clutter.ActorAlign.CENTER, reactive: true });
+        let controlsRow = new PixelSnappedBox({ style_class: 'controls-row', vertical: false, x_align: Clutter.ActorAlign.CENTER, reactive: true });
         
         this._shuffleIcon = new St.Icon({ icon_name: 'media-playlist-shuffle-symbolic', icon_size: 16 });
         this._shuffleBtn = new St.Button({ style_class: 'control-btn-secondary', child: this._shuffleIcon, reactive: true, can_focus: true });
@@ -1115,7 +1134,6 @@ class ExpandedPlayer extends St.Widget {
             }
             
             menuW = Math.round(menuW);
-            if (menuW % 2 !== 0) menuW++;
             
             let menuH = Math.round(natH > 0 ? natH : 260);
             if (menuH % 2 !== 0) menuH++;
