@@ -54,6 +54,7 @@ const MPRIS_IFACE = `
     <property name="Identity" type="s" access="read"/>
     <property name="DesktopEntry" type="s" access="read"/>
     <method name="Raise"/>
+    <method name="Quit"/>
   </interface>
 </node>`;
 
@@ -207,6 +208,54 @@ export class MusicController {
         else if (action === 'open_app') this.openApp();
         else if (action === 'toggle_menu') this.toggleMenu();
         else if (action === 'open_player_menu') this.togglePlayerMenu();
+        else if (action === 'open_settings') this.openSettings();
+        else if (action === 'close_app') this.closeApp();
+    }
+    
+    openSettings() {
+        // Megnyitja az extension beállításait
+        if (this._extension) {
+            this._extension.openPreferences();
+        }
+    }
+
+    closeApp() {
+        let player = this._getActivePlayer();
+        if (!player) return;
+
+        let busName = player._busName;
+        this._connection.call(
+            busName, 
+            '/org/mpris/MediaPlayer2', 
+            'org.mpris.MediaPlayer2', 
+            'Quit',
+            null, null, Gio.DBusCallFlags.NONE, -1, null,
+            (conn, res) => { 
+                try { conn.call_finish(res); } catch (e) {} 
+            }
+        );
+
+        let killTarget = player._desktopEntry;
+        if (!killTarget) {
+            let parts = busName.replace('org.mpris.MediaPlayer2.', '').split('.');
+            if (['org', 'com', 'net', 'io'].includes(parts[0]) && parts.length >= 3) {
+                killTarget = parts.slice(0, 3).join('.');
+            } else {
+                killTarget = parts[0];
+            }
+        }
+
+        if (killTarget) {
+            killTarget = killTarget.toLowerCase();
+            try {
+                if (killTarget.includes('.')) {
+                    Gio.Subprocess.new(['flatpak', 'kill', killTarget], Gio.SubprocessFlags.NONE);
+                } 
+                Gio.Subprocess.new(['pkill', '-f', killTarget], Gio.SubprocessFlags.NONE);
+            } catch (e) {
+                console.debug("[Dynamic Music Pill] Failed to hard kill: " + killTarget);
+            }
+        }
     }
 
     openApp() {
