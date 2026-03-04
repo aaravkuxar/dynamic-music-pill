@@ -8,8 +8,8 @@ import Gio from 'gi://Gio';
 import Pango from 'gi://Pango';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { formatTime, getAverageColor, smartUnpack } from './utils.js';
-import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
-const _ = Extension.lookupByURL(import.meta.url).gettext;
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
+
 
 export const CrossfadeArt = GObject.registerClass(
 class CrossfadeArt extends St.Widget {
