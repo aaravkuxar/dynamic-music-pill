@@ -8,6 +8,8 @@ import Gio from 'gi://Gio';
 import Pango from 'gi://Pango';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { formatTime, getAverageColor, smartUnpack } from './utils.js';
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
+
 
 export const CrossfadeArt = GObject.registerClass(
 class CrossfadeArt extends St.Widget {
@@ -387,9 +389,26 @@ class CavaVisualizer extends St.DrawingArea {
             if (!GLib.find_program_in_path('cava')) return;
 
             let tmpConfig = `${GLib.get_tmp_dir()}/dynamic-pill-cava-${GLib.get_monotonic_time()}`;
-            let cfg = `[general]\nbars = ${this._barCount}\nframerate = 60\nautosens = 1\n` +
-                      `[input]\nmethod = pulse\nsource = auto\n` +
-                      `[output]\nmethod = raw\nbit_format = 16bit\nchannels = mono\nraw_target = /dev/stdout\n`;
+            
+            let cfg = `[general]\n` +
+                      `bars = ${this._barCount}\n` +
+                      `framerate = 60\n` +
+                      `autosens = 1\n` +
+                      `lower_cutoff_freq = 50\n` +
+                      `higher_cutoff_freq = 8000\n` +  
+                      `[smoothing]\n` +
+                      `monstercat = 1.5\n` +        
+                      `waves = 0\n` +
+                      `noise_reduction = 60\n` +   
+                      `gravity = 140\n` +             
+                      `[input]\n` +
+                      `method = pulse\n` +
+                      `source = auto\n` +
+                      `[output]\n` +
+                      `method = raw\n` +
+                      `bit_format = 16bit\n` +
+                      `channels = mono\n` +
+                      `raw_target = /dev/stdout\n`;
 
             GLib.file_set_contents(tmpConfig, new TextEncoder().encode(cfg));
             this._tmpConfigPath = tmpConfig;
@@ -439,15 +458,16 @@ class CavaVisualizer extends St.DrawingArea {
                     let lastFrameOffset = (totalFrames - 1) * frameSize;
                     let dv = new DataView(this._rawBuffer.buffer, this._rawBuffer.byteOffset + lastFrameOffset, frameSize);
 
-                    let maxVal = 1;
+                    if (this._rollingMax === undefined) this._rollingMax = 2000;
+
+                    let currentFrameMax = 1;
                     for (let i = 0; i < this._barCount; i++) {
-                        let v = dv.getInt16(i * 2, true);
-                        v = Math.abs(v);
+                        let v = dv.getUint16(i * 2, true);
                         this._bins[i] = v;
-                        if (v > maxVal) maxVal = v;
+                        if (v > currentFrameMax) currentFrameMax = v;
                     }
 
-                    if (maxVal < 500) {
+                    if (currentFrameMax < 100) {
                         this._silentFrames++;
                     } else {
                         this._silentFrames = 0;
@@ -456,15 +476,28 @@ class CavaVisualizer extends St.DrawingArea {
                     if (this._silentFrames >= 30) {
                         this._prevHeights.fill(1);
                         this._peakValues.fill(0);
+                        this._rollingMax = 2000; // Reset
                     } else {
-                        let invMaxVal = maxVal > 0 ? 1 / maxVal : 0;
+                        if (currentFrameMax > this._rollingMax) {
+                            this._rollingMax = currentFrameMax;
+                        } else {
+                            this._rollingMax = this._rollingMax * 0.98 + currentFrameMax * 0.02;
+                        }
+                        
+                        let safeMax = Math.max(this._rollingMax, 5000); 
+                        let invMaxVal = 1 / safeMax;
+                        
                         let totalHeight = this.get_height() || 24;
                         let maxHalfHeight = totalHeight / 2;
 
                         for (let i = 0; i < this._barCount; i++) {
                             let v = this._bins[i];
-                            let norm = v * invMaxVal;
-                            let target = Math.max(1, Math.round(Math.sqrt(norm) * maxHalfHeight));
+                            
+                            let norm = Math.min(1.0, v * invMaxVal); 
+                            
+                            let visualCurve = Math.pow(norm, 0.8); 
+                            let target = Math.max(1, Math.round(visualCurve * maxHalfHeight));
+                            
                             if (this._silentFrames === 0 && v > 0 && target < 3) target = 3;
 
                             let prev = this._prevHeights[i];
@@ -708,7 +741,7 @@ class WaveformVisualizer extends St.Bin {
 
     setMode(m) {
         if (m === 3 && !GLib.find_program_in_path('cava')) {
-            Main.notify('Dynamic Music Pill', 'Please install "cava" for real-time mode.');
+            Main.notify('Dynamic Music Pill', _('Please install "cava" for real-time mode.'));
             m = 2;
         }
 
@@ -1158,10 +1191,10 @@ class ExpandedPlayer extends St.Widget {
 
     updateContent(title, artist, artUrl, status) {
         if (this._titleLabel && this._titleLabel._text !== title) {
-            this._titleLabel.setText(title || 'Unknown Title', false);
+            this._titleLabel.setText(title || _('Unknown Title'), false);
         }
         if (this._artistLabel && this._artistLabel._text !== artist) {
-            this._artistLabel.setText(artist || 'Unknown Artist', false);
+            this._artistLabel.setText(artist || _('Unknown Artist'), false);
         }
 
         this._seekLockTime = 0;
@@ -2730,7 +2763,7 @@ class MusicPill extends St.Widget {
       }
 
       if (this._lastTitle !== t || this._lastArtist !== a || forceUpdate) {
-          if (this._titleScroll) this._titleScroll.setText(t || 'Loading...', forceUpdate, lyricTime);
+          if (this._titleScroll) this._titleScroll.setText(t || _('Loading...'), forceUpdate, lyricTime);
           if (this._artistScroll) this._artistScroll.setText(a || '', forceUpdate);
           this._lastTitle = t;
           this._lastArtist = a;
@@ -2932,7 +2965,7 @@ class PlayerSelectorMenu extends St.Widget {
         }
 
         let titleLabel = new St.Label({ 
-            text: 'Select Media Player', 
+            text: _('Select Media Player'),
             style: `font-weight: bold; margin-bottom: 15px; font-size: 12pt; ${textColorStyle}`, 
             x_align: Clutter.ActorAlign.CENTER 
         });
@@ -2943,7 +2976,7 @@ class PlayerSelectorMenu extends St.Widget {
         // ==== Auto (Smart Selection) Button ====
         let autoContent = new St.BoxLayout({ vertical: false, style: 'spacing: 12px;' });
         let autoIcon = new St.Icon({ icon_name: 'emblem-system-symbolic', icon_size: 24, style: textColorStyle });
-	let autoLabel = new St.Label({ text: 'Auto (Smart Selection)', y_align: Clutter.ActorAlign.CENTER, style: textColorStyle });
+	let autoLabel = new St.Label({ text: _('Auto (Smart Selection)'), y_align: Clutter.ActorAlign.CENTER, style: textColorStyle });
         autoContent.add_child(autoIcon);
         autoContent.add_child(autoLabel);
 
