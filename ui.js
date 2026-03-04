@@ -1017,7 +1017,7 @@ class ExpandedPlayer extends St.Widget {
             let isSelected = (currentSelected === busName);
             
             let icon = new St.Icon({ 
-                icon_name: rawAppName.toLowerCase(), 
+                icon_name: proxy._desktopEntry || rawAppName.toLowerCase(), 
                 fallback_icon_name: 'audio-x-generic-symbolic',
                 icon_size: 20 
             });
