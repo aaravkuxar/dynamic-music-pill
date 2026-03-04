@@ -6,6 +6,23 @@ import * as Mpris from 'resource:///org/gnome/shell/ui/mpris.js';
 import { smartUnpack } from './utils.js';
 import { getMixerControl } from 'resource:///org/gnome/shell/ui/status/volume.js';
 import { MusicPill, ExpandedPlayer, PlayerSelectorMenu } from './ui.js';
+import { LyricsClient } from './LyricsClient.js';
+
+const LYRIC_IFACE_NAME = "org.gnome.Shell.TrayLyric";
+const LYRIC_OBJECT_PATH = "/org/gnome/Shell/TrayLyric";
+
+const LYRIC_IFACE_XML = `
+<node>
+  <interface name="org.gnome.Shell.TrayLyric">
+    <method name="LikeThisTrack">
+      <arg type="b" name="liked"/>
+    </method>
+    <method name="UpdateLyric">
+      <arg type="s" name="current_lyric"/>
+    </method>
+    <signal name="UpdateLikedStatus"></signal>
+  </interface>
+</node>`;
 
 const MPRIS_IFACE = `
 <node>
@@ -37,6 +54,7 @@ const MPRIS_IFACE = `
     <property name="Identity" type="s" access="read"/>
     <property name="DesktopEntry" type="s" access="read"/>
     <method name="Raise"/>
+    <method name="Quit"/>
   </interface>
 </node>`;
 
@@ -56,12 +74,23 @@ export class MusicController {
         this._lastActionTime = 0;
         this._currentDock = null;
         this._isMovingItem = false;
+
+        // Network lyrics acquisition related
+        this._lyricsClient = new LyricsClient();
+        this._fetchedLyricsData = null; 
+        this._fetchedTrackKey = null; 
+        this._lyricsTimerId = null; 
+        this._dbusLyricActive = false; 
+        this._lastLyricIndex = -1; 
+
+        this._lyricOwnerId = null;
+        this._lyricIfaceInfo = null;
         
         this._createPill();
     }
 
     _createPill() {
-	if (this._pill) return;
+    if (this._pill) return;
         this._pill = new MusicPill(this);
         this._pill.connect('destroy', () => {
             this._pill = null;
@@ -93,7 +122,7 @@ export class MusicController {
         );
         this._scan();
         this._settings.connectObject('changed::player-filter-mode', () => this._scan(), this);
-	this._settings.connectObject('changed::player-filter-list', () => this._scan(), this);
+    this._settings.connectObject('changed::player-filter-list', () => this._scan(), this);
 
         this._watchdog = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
             this._monitorGameMode();
@@ -104,6 +133,18 @@ export class MusicController {
         });
         
         this._updateDefaultPlayerVisibility();
+        this._createLyricProxy();
+        this._settings.connectObject('changed::enable-lyrics', () => {
+            if (!this._settings.get_boolean('enable-lyrics')) {
+                if (this._pill) this._pill.setLyric(null);
+                this._stopLyricsTimer();
+                this._fetchedLyricsData = null;
+                this._fetchedTrackKey = null;
+                this._dbusLyricActive = false;
+            } else {
+                this._triggerUpdate();
+            }
+        }, this);
     }
 
     disable() {
@@ -119,16 +160,30 @@ export class MusicController {
         global.display.disconnectObject(this);
         this._settings.disconnectObject(this);
         
-        if (this._injectTimeout) { GLib.source_remove(this._injectTimeout); this._injectTimeout = null; }
-        if (this._watchdog) { GLib.source_remove(this._watchdog); this._watchdog = null; }
-        if (this._recheckTimer) { GLib.source_remove(this._recheckTimer); this._recheckTimer = null; }
-        if (this._updateTimeoutId) { GLib.source_remove(this._updateTimeoutId); this._updateTimeoutId = null; }
-        if (this._retryArtTimer) { GLib.source_remove(this._retryArtTimer); this._retryArtTimer = null; }
+        if (this._injectTimeout) { GLib.Source.remove(this._injectTimeout); this._injectTimeout = null; }
+        if (this._watchdog) { GLib.Source.remove(this._watchdog); this._watchdog = null; }
+        if (this._recheckTimer) { GLib.Source.remove(this._recheckTimer); this._recheckTimer = null; }
+        if (this._updateTimeoutId) { GLib.Source.remove(this._updateTimeoutId); this._updateTimeoutId = null; }
+        if (this._retryArtTimer) { GLib.Source.remove(this._retryArtTimer); this._retryArtTimer = null; }
         
         if (this._ownerId) {
             this._connection.signal_unsubscribe(this._ownerId);
             this._ownerId = null;
         }
+
+        if (this._lyricOwnerId) {
+            Gio.bus_unown_name(this._lyricOwnerId);
+            this._lyricOwnerId = null;
+        }
+
+        // Clear the web lyrics
+        this._stopLyricsTimer();
+        if (this._lyricsClient) {
+            this._lyricsClient.destroy();
+            this._lyricsClient = null;
+        }
+        this._fetchedLyricsData = null;
+        this._fetchedTrackKey = null;
         
         if (this._expandedPlayer) {
             this._expandedPlayer.destroy();
@@ -145,6 +200,7 @@ export class MusicController {
         
         this._updateDefaultPlayerVisibility(true);
     }
+    
     performAction(action) {
         if (action === 'play_pause') this.togglePlayback();
         else if (action === 'next') this.next();
@@ -152,6 +208,85 @@ export class MusicController {
         else if (action === 'open_app') this.openApp();
         else if (action === 'toggle_menu') this.toggleMenu();
         else if (action === 'open_player_menu') this.togglePlayerMenu();
+        else if (action === 'open_settings') this.openSettings();
+        else if (action === 'close_app') this.closeApp();
+    }
+    
+    openSettings() {
+        if (this._extension) {
+            this._extension.openPreferences();
+        }
+    }
+
+    _getCustomAppMapping() {
+        let mapping = {};
+        if (this._settings) {
+            try {
+                let mapStr = this._settings.get_string('app-name-mapping') || '';
+                let pairs = mapStr.split(',');
+                for (let pair of pairs) {
+                    let parts = pair.split(':');
+                    if (parts.length === 2) {
+                        mapping[parts[0].trim().toLowerCase()] = parts[1].trim().toLowerCase();
+                    }
+                }
+            } catch (e) {}
+        }
+        return mapping;
+    }
+
+    closeApp() {
+        let player = this._getActivePlayer();
+        if (!player) return;
+
+        let busName = player._busName;
+        
+        this._connection.call(
+            busName, 
+            '/org/mpris/MediaPlayer2', 
+            'org.mpris.MediaPlayer2', 
+            'Quit',
+            null, null, Gio.DBusCallFlags.NONE, -1, null,
+            (conn, res) => { 
+                try { conn.call_finish(res); } catch (e) {} 
+            }
+        );
+
+        let parts = busName.replace('org.mpris.MediaPlayer2.', '').split('.');
+        
+        let rawBus = parts[0].toLowerCase();
+        let fullBusId = parts.join('.').toLowerCase();
+        let identity = (player._identity || '').toLowerCase();
+        
+        let customMapping = this._getCustomAppMapping();
+        let killTarget = customMapping[fullBusId] || customMapping[rawBus] || customMapping[identity] || player._desktopEntry;
+        if (killTarget === 'enter_app_id_here') killTarget = player._desktopEntry; 
+
+        if (!killTarget) {
+            if (['org', 'com', 'net', 'io'].includes(parts[0]) && parts.length >= 3) {
+                killTarget = parts.slice(0, 3).join('.');
+            } else {
+                killTarget = parts[0];
+            }
+        }
+
+        if (killTarget) {
+            killTarget = killTarget.toLowerCase();
+            
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 800, () => {
+                if (!this._proxies.has(busName)) return GLib.SOURCE_REMOVE;
+                
+                try {
+                    if (killTarget.includes('.')) {
+                        Gio.Subprocess.new(['flatpak', 'kill', killTarget], Gio.SubprocessFlags.NONE);
+                    } 
+                    Gio.Subprocess.new(['pkill', '-f', killTarget], Gio.SubprocessFlags.NONE);
+                } catch (e) {
+                    console.debug("[Dynamic Music Pill] Failed to hard kill: " + killTarget);
+                }
+                return GLib.SOURCE_REMOVE;
+            });
+        }
     }
 
     openApp() {
@@ -159,18 +294,55 @@ export class MusicController {
         if (!player) return;
 
         this._connection.call(
-        player._busName, '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2', 'Raise',
-        null, null, Gio.DBusCallFlags.NONE, -1, null,
-        (conn, res) => { conn.call_finish(res); }
-    );
+            player._busName, '/org/mpris/MediaPlayer2', 'org.mpris.MediaPlayer2', 'Raise',
+            null, null, Gio.DBusCallFlags.NONE, -1, null,
+            (conn, res) => { try { conn.call_finish(res); } catch (e) {} }
+        );
 
-        let rawBus = player._busName.replace('org.mpris.MediaPlayer2.', '').split('.')[0].toLowerCase();
         let appSystem = Shell.AppSystem.get_default();
         let runningApps = appSystem.get_running();
 
+        let busNameParts = player._busName.replace('org.mpris.MediaPlayer2.', '').split('.');
+        let rawBus = busNameParts[0].toLowerCase();
+        let fullBusId = busNameParts.join('.').toLowerCase();
+        
+        let desktopEntry = (player._desktopEntry || '').toLowerCase();
+        let identity = (player._identity || '').toLowerCase();
+
+        let customMapping = this._getCustomAppMapping();
+        let customTarget = customMapping[fullBusId] || customMapping[rawBus] || customMapping[identity] || null;
+        if (customTarget === 'enter_app_id_here') customTarget = null;
+
         for (let app of runningApps) {
-            let appName = app.get_name().toLowerCase();
             let appId = app.get_id().toLowerCase();
+            let appName = app.get_name().toLowerCase();
+            let isMatch = false;
+
+            if (customTarget && (appId.includes(customTarget) || appName.includes(customTarget))) {
+                isMatch = true; 
+            } else if (!customTarget && desktopEntry && appId.includes(desktopEntry)) {
+                isMatch = true; 
+            } else if (!customTarget && identity && appName === identity) {
+                isMatch = true;
+            } else if (!customTarget && appId.includes(fullBusId)) {
+                isMatch = true;
+            }
+
+            if (isMatch) {
+                let windows = app.get_windows();
+                if (windows && windows.length > 0) {
+                    if (Main.activateWindow) Main.activateWindow(windows[0]);
+                    else windows[0].activate(global.get_current_time());
+                    return;
+                }
+                app.activate();
+                return;
+            }
+        }
+
+        for (let app of runningApps) {
+            let appId = app.get_id().toLowerCase();
+            let appName = app.get_name().toLowerCase();
 
             if (appId.includes(rawBus) || appName.includes(rawBus)) {
                 let windows = app.get_windows();
@@ -283,7 +455,7 @@ export class MusicController {
     }
 
     _queueInject() {
-        if (this._injectTimeout) GLib.source_remove(this._injectTimeout);
+        if (this._injectTimeout) GLib.Source.remove(this._injectTimeout);
         this._injectTimeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
             this._inject();
             this._injectTimeout = null;
@@ -460,6 +632,7 @@ export class MusicController {
 
                         if (keys.Metadata !== undefined || keys.PlaybackStatus !== undefined) {
                             let trackId = null;
+                            let trackChanged = false;
                             if (keys.Metadata) {
                                 let mObj = (keys.Metadata instanceof GLib.Variant) ? keys.Metadata.deep_unpack() : keys.Metadata;
                                 trackId = smartUnpack(mObj['mpris:trackid']);
@@ -470,27 +643,29 @@ export class MusicController {
                                 }
                             }
 
-                            this._connection.call(
-                                p._busName,
-                                '/org/mpris/MediaPlayer2',
-                                'org.freedesktop.DBus.Properties',
-                                'Get',
-                                new GLib.Variant('(ss)', ['org.mpris.MediaPlayer2.Player', 'Position']),
-                                null, Gio.DBusCallFlags.NONE, -1, null,
-                                (conn, asyncRes) => {
-                                    try {
-                                        let result = conn.call_finish(asyncRes);
-                                        if (result) {
-                                            let posVariant = result.deep_unpack()[0];
-                                            if (posVariant) {
-                                                p._lastPosition = posVariant instanceof GLib.Variant ? posVariant.unpack() : posVariant;
-                                                p._lastPositionTime = Date.now();
-                                                this._triggerUpdate();
+                            if (trackChanged || keys.PlaybackStatus !== undefined) {
+                                this._connection.call(
+                                    p._busName,
+                                    '/org/mpris/MediaPlayer2',
+                                    'org.freedesktop.DBus.Properties',
+                                    'Get',
+                                    new GLib.Variant('(ss)', ['org.mpris.MediaPlayer2.Player', 'Position']),
+                                    null, Gio.DBusCallFlags.NONE, -1, null,
+                                    (conn, asyncRes) => {
+                                        try {
+                                            let result = conn.call_finish(asyncRes);
+                                            if (result) {
+                                                let posVariant = result.deep_unpack()[0];
+                                                if (posVariant) {
+                                                    p._lastPosition = posVariant instanceof GLib.Variant ? posVariant.unpack() : posVariant;
+                                                    p._lastPositionTime = Date.now();
+                                                    this._triggerUpdate();
+                                                }
                                             }
-                                        }
-                                    } catch (e) {}
-                                }
-                            );
+                                        } catch (e) { console.debug(e.message); }
+                                    }
+                                );
+                            }
                         }
 
                         this._triggerUpdate();
@@ -521,7 +696,7 @@ export class MusicController {
                               p._desktopEntry = v instanceof GLib.Variant ? v.unpack() : v;
                             }
                           }
-                        } catch (e) {}
+                        } catch (e) { console.debug(e.message); }
                       }
 
                     );
@@ -545,7 +720,7 @@ export class MusicController {
                                         p._lastPositionTime = Date.now();
                                     }
                                 }
-                            } catch (e) {}
+                            } catch (e) { console.debug(e.message); }
                             this._triggerUpdate();
                         }
                     );
@@ -567,24 +742,206 @@ export class MusicController {
         }
     }
 
+    _createLyricProxy() {
+        let lyricNodeInfo = Gio.DBusNodeInfo.new_for_xml(LYRIC_IFACE_XML);
+        this._lyricIfaceInfo = lyricNodeInfo.lookup_interface(LYRIC_IFACE_NAME);
+
+        this._lyricOwnerId = Gio.bus_own_name(
+            Gio.BusType.SESSION,
+            LYRIC_IFACE_NAME,
+            Gio.BusNameOwnerFlags.NONE,
+            (connection) => {
+                connection.register_object(
+                    LYRIC_OBJECT_PATH,
+                    this._lyricIfaceInfo,
+                    this._onLyricMethodCall.bind(this),
+                    null,
+                    null,
+                );
+            },
+            null,
+            null,
+        );
+    }
+
+    _onLyricMethodCall(connection, sender, objectPath, interfaceName, methodName, parameters, invocation) {
+        if (methodName === "UpdateLyric") {
+            try {
+                // When the lyrics switch is off, ignore lyrics updates
+                if (!this._settings || !this._settings.get_boolean('enable-lyrics')) {
+                    invocation.return_value(null);
+                    return;
+                }
+
+                let raw = parameters.unpack()[0];
+                let lrc = JSON.parse(raw.get_string()[0]);
+
+                let active = this._getActivePlayer();
+                let activeBus = active ? (active._busName || "") : "";
+
+                if (!active || lrc.content === "" || !activeBus.includes(lrc.sender)) {
+                    if (this._pill) this._pill.setLyric(null);
+                    this._dbusLyricActive = false;
+                } else {
+                    this._dbusLyricActive = true;
+                    this._stopLyricsTimer();
+                    if (this._pill) this._pill.setLyric(lrc);
+                }
+            } catch (e) {
+                console.debug(`[DynamicMusicPill] Lyric error: ${e}`);
+            }
+            invocation.return_value(null);
+        }
+    }
+
+    // Network lyrics retrieval
+    async _fetchNetworkLyrics(player) {
+        if (!player || !this._lyricsClient) return;
+        if (!this._settings || !this._settings.get_boolean('enable-lyrics')) return;
+
+        let m = player.Metadata;
+        if (!m) return;
+
+        let metaObj = m instanceof GLib.Variant ? m.deep_unpack() : m;
+        let title = smartUnpack(metaObj['xesam:title']);
+        let artist = smartUnpack(metaObj['xesam:artist']);
+        let album = smartUnpack(metaObj['xesam:album']) || '';
+        let length = smartUnpack(metaObj['mpris:length']) || 0;
+
+        if (Array.isArray(artist)) artist = artist.join(', ');
+        if (!title) return;
+
+        let trackKey = `${title}||${artist}`;
+
+        if (this._fetchedTrackKey === trackKey && this._fetchedLyricsData !== undefined) {
+            return;
+        }
+
+        this._fetchedTrackKey = trackKey;
+        this._fetchedLyricsData = null; 
+        this._lastLyricIndex = -1;
+
+        let durationSec = length > 0 ? length / 1000000 : 0;
+
+        try {
+            let lyrics = await this._lyricsClient.getLyrics(title, artist, album, durationSec);
+            if (this._fetchedTrackKey !== trackKey) return;
+
+            this._fetchedLyricsData = lyrics; 
+
+            if (lyrics && lyrics.length > 0) {
+                this._startLyricsTimer();
+            }
+        } catch (e) {
+            console.debug(`[DynamicMusicPill] Network lyrics fetch error: ${e}`);
+            this._fetchedLyricsData = null;
+        }
+    }
+
+    _startLyricsTimer() {
+        if (this._lyricsTimerId) return;
+        this._lyricsTimerId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => {
+            this._onLyricsTick();
+            return GLib.SOURCE_CONTINUE;
+        });
+    }
+
+    _stopLyricsTimer() {
+        if (this._lyricsTimerId) {
+            GLib.Source.remove(this._lyricsTimerId);
+            this._lyricsTimerId = null;
+        }
+    }
+
+    _syncPosition(player) {
+        if (!player || !this._connection) return;
+        this._connection.call(
+            player._busName,
+            '/org/mpris/MediaPlayer2',
+            'org.freedesktop.DBus.Properties',
+            'Get',
+            new GLib.Variant('(ss)', ['org.mpris.MediaPlayer2.Player', 'Position']),
+            null, Gio.DBusCallFlags.NONE, -1, null,
+            (conn, asyncRes) => {
+                try {
+                    let result = conn.call_finish(asyncRes);
+                    if (result) {
+                        let posVariant = result.deep_unpack()[0];
+                        if (posVariant) {
+                            player._lastPosition = posVariant instanceof GLib.Variant ? posVariant.unpack() : posVariant;
+                            player._lastPositionTime = Date.now();
+                        }
+                    }
+                } catch (e) {console.debug(`[Dynamic Music Pill] Position sync error: ${e.message}`);}
+            }
+        );
+    }
+
+    _onLyricsTick() {
+    
+    	if (!this._settings || !this._settings.get_boolean('enable-lyrics')) {
+            this._stopLyricsTimer();
+            return;
+        }
+        if (!this._fetchedLyricsData || !this._pill) return;
+        if (this._dbusLyricActive) return;
+
+        let active = this._getActivePlayer();
+        if (!active || active.PlaybackStatus !== 'Playing') return;
+
+        let now = Date.now();
+        if (!this._lastPositionSync || now - this._lastPositionSync > 1000) {
+            this._lastPositionSync = now;
+            this._syncPosition(active);
+        }
+
+        let positionUs = active._lastPosition + (now - active._lastPositionTime) * 1000;
+        let positionMs = positionUs / 1000;
+
+        let currentIndex = -1;
+        for (let i = this._fetchedLyricsData.length - 1; i >= 0; i--) {
+            if (this._fetchedLyricsData[i].time <= positionMs) {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        if (currentIndex >= 0 && currentIndex !== this._lastLyricIndex) {
+            this._lastLyricIndex = currentIndex;
+
+            let currentLine = this._fetchedLyricsData[currentIndex];
+            let durationSec = 5;
+            if (currentIndex + 1 < this._fetchedLyricsData.length) {
+                durationSec = (this._fetchedLyricsData[currentIndex + 1].time - currentLine.time) / 1000;
+            }
+
+            let lrc = {
+                sender: "lrclib",
+                content: currentLine.text,
+                time: durationSec,
+            };
+            this._pill.setLyric(lrc);
+        }
+    }
+
     _triggerUpdate() {
         if (this._updateTimeoutId) {
-            GLib.source_remove(this._updateTimeoutId);
+            return; 
         }
 
         let useDelay = this._settings ? this._settings.get_boolean('compatibility-delay') : false;
-        let delay = useDelay ? 800 : 100;
+        let delay = useDelay ? 800 : 150;
 
         this._updateTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delay, () => {
-            this._updateUI();
             this._updateTimeoutId = null;
+            this._updateUI();
             return GLib.SOURCE_REMOVE;
         });
     }
 
     _updateUI() {
         if (this._recheckTimer) {
-            GLib.source_remove(this._recheckTimer);
+            GLib.Source.remove(this._recheckTimer);
             this._recheckTimer = null;
         }
 
@@ -606,6 +963,13 @@ export class MusicController {
 
         let active = this._getActivePlayer();
         if (active) {
+            if (this._lastWinnerName !== active._busName) {
+                this._dbusLyricActive = false;
+                this._fetchedTrackKey = null;
+                this._fetchedLyricsData = null;
+                this._lastLyricIndex = -1;
+                this._stopLyricsTimer();
+            }
             this._lastWinnerName = active._busName;
 
             let m = active.Metadata;
@@ -618,6 +982,11 @@ export class MusicController {
                 artist = smartUnpack(metaObj['xesam:artist']);
                 if (Array.isArray(artist)) artist = artist.map(a => smartUnpack(a)).join(', ');
                 currentArt = smartUnpack(metaObj['mpris:artUrl']);
+            }
+            
+            if (!title && active._busName) {
+                title = active._identity || "Unknown Player";
+                artist = "No active media";
             }
 
             let rawName = active._busName || "";
@@ -655,28 +1024,55 @@ export class MusicController {
             let now = Date.now();
             let isSkipActive = (now - this._lastActionTime < 3000);
 
+            if (this._settings && this._settings.get_boolean('enable-lyrics') && !this._dbusLyricActive) {
+                let metaObj2 = null;
+                if (active.Metadata) {
+                    metaObj2 = active.Metadata instanceof GLib.Variant ? active.Metadata.deep_unpack() : active.Metadata;
+                }
+                let currentTitle = metaObj2 ? smartUnpack(metaObj2['xesam:title']) : null;
+                let currentArtist = metaObj2 ? smartUnpack(metaObj2['xesam:artist']) : null;
+                if (Array.isArray(currentArtist)) currentArtist = currentArtist.join(', ');
+
+                let currentTrackKey = `${currentTitle}||${currentArtist}`;
+
+                if (currentTitle && this._fetchedTrackKey !== currentTrackKey) {
+                    this._pill.setLyric(null);
+                    this._fetchNetworkLyrics(active);
+                } else if (this._fetchedLyricsData && active.PlaybackStatus === 'Playing') {
+                    this._startLyricsTimer();
+                } else if (active.PlaybackStatus !== 'Playing') {
+                    this._stopLyricsTimer();
+                }
+            }
+
             this._pill.updateDisplay(title, artist, artUrl, active.PlaybackStatus, active._busName, isSkipActive, active);
         } else {
+            this._stopLyricsTimer();
+            this._fetchedTrackKey = null;
+            this._fetchedLyricsData = null;
+            this._dbusLyricActive = false;
+            this._lastLyricIndex = -1;
+            this._lastPositionSync = 0;
             this._pill.updateDisplay(null, null, null, 'Stopped', null, false);
         }
     }
     
-	    _isPlayerAllowed(busName) {
-	    let mode = this._settings.get_int('player-filter-mode');
-	    if (mode === 0) return true;
+    _isPlayerAllowed(busName) {
+        let mode = this._settings.get_int('player-filter-mode');
+        if (mode === 0) return true;
 
-	    let listStr = this._settings.get_string('player-filter-list').toLowerCase();
-	    let list = listStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
-	    
-	    if (list.length === 0) return mode === 1;
+        let listStr = this._settings.get_string('player-filter-list').toLowerCase();
+        let list = listStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
+        
+        if (list.length === 0) return mode === 1;
 
-	    let lowerName = busName.toLowerCase();
-	    let match = list.some(item => lowerName.includes(item));
+        let lowerName = busName.toLowerCase();
+        let match = list.some(item => lowerName.includes(item));
 
-	    if (mode === 1) return !match;
-	    if (mode === 2) return match;
-	    return true;
-	}
+        if (mode === 1) return !match;
+        if (mode === 2) return match;
+        return true;
+    }
 
     _getActivePlayer() {
         let proxiesArr = Array.from(this._proxies.values());
@@ -737,6 +1133,36 @@ export class MusicController {
     togglePlayback() { let p = this._getActivePlayer(); if (p) p.PlayPauseRemote(); }
     next() { this._lastActionTime = Date.now(); let p = this._getActivePlayer(); if (p) p.NextRemote(); }
     previous() { this._lastActionTime = Date.now(); let p = this._getActivePlayer(); if (p) p.PreviousRemote(); }
+    
+    switchPlayer(isNext) {
+        let proxiesArr = Array.from(this._proxies.keys());
+        if (proxiesArr.length <= 1) return;
+
+        let currentBus = this._settings.get_string('selected-player-bus');
+        if (!currentBus || !this._proxies.has(currentBus)) {
+            let active = this._getActivePlayer();
+            currentBus = active ? active._busName : proxiesArr[0];
+        }
+
+        let currentIndex = proxiesArr.indexOf(currentBus);
+        if (currentIndex === -1) currentIndex = 0;
+
+        if (isNext) {
+            currentIndex = (currentIndex + 1) % proxiesArr.length;
+        } else {
+            currentIndex = (currentIndex - 1 + proxiesArr.length) % proxiesArr.length;
+        }
+
+        let nextBus = proxiesArr[currentIndex];
+        
+        this._settings.set_string('selected-player-bus', nextBus);
+        this._updateUI();
+        
+        if (this._playerMenu && this._playerMenu.visible) {
+            this._playerMenu.populate();
+        }
+    }
+    
     changeVolume(up) {
             let mixer = getMixerControl();
             if (!mixer) return;
